@@ -1,4 +1,6 @@
 import logging
+import os
+import httpx
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -47,23 +49,8 @@ def prewarm(proc: JobProcess):
 async def entrypoint(ctx: JobContext):
     logger.info(f"connecting to room {ctx.room.name}")
 
-    async def write_transcript():
-        current_date = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        # This example writes to the temporary directory, but you can save to any location
-        filename = f"/tmp/transcript_{ctx.room.name}_{current_date}.json"
-        
-        with open(filename, 'w') as f:
-            json.dump(agent.history.to_dict(), f, indent=2)
-            
-        print(f"Transcript for {ctx.room.name} saved to {filename}")
-
-    ctx.add_shutdown_callback(write_transcript)
-    await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
-    logger.info(f"Connected to room {ctx.room.name}")
-
+    # Initialize agent first so the shutdown callback can access it
     userdata = UserData(current_room=ctx.room)
-
     main_agent = MainAgent()
     visual_agent = VisualDataAgent()
     diagnosis_agent = DiagnosisAgent()
@@ -89,6 +76,41 @@ async def entrypoint(ctx: JobContext):
         max_endpointing_delay=5.0,
         
     )
+
+    # Define the shutdown callback *after* agent is defined so it can capture it
+    async def send_transcript_on_shutdown():
+        server_url = os.getenv("AITAS_SERVER_URL")
+        if not server_url:
+            logger.error("AITAS_SERVER_URL not set. Cannot send transcript.")
+            return
+
+        endpoint = f"{server_url.rstrip('/')}/v2/generate-report"
+        transcript_data = agent.history.to_dict()
+        room_name = ctx.room.name # Get room name from context
+        payload = {
+            "transcript": transcript_data,
+            "sessionId": room_name # Add session ID (room name)
+        }
+        
+        logger.info(f"Sending transcript to {endpoint}")
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    endpoint,
+                    json=payload, # Use json parameter for automatic serialization and header
+                    timeout=20.0 
+                )
+                response.raise_for_status() # Check for HTTP errors
+                logger.info(f"Transcript successfully sent to {endpoint}. Status: {response.status_code}")
+        except httpx.RequestError as e:
+            logger.error(f"Error sending transcript to {endpoint}: {e}")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred while sending transcript: {e}")
+
+    ctx.add_shutdown_callback(send_transcript_on_shutdown)
+
+    await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
+    logger.info(f"Connected to room {ctx.room.name}")
 
     usage_collector = metrics.UsageCollector()
 
