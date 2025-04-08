@@ -145,7 +145,7 @@ async def entrypoint(ctx: JobContext):
     agent = AgentSession[UserData](
         userdata=userdata,
         vad=silero.VAD.load(),
-        stt=openai.STT(language="en", model="gpt-4o-transcribe"), # Apply STT config here
+        stt=openai.STT(language="en", model="gpt-4o-transcribe", prompt="You are a helpful assistant that can answer questions and help with tasks related to HVAC systems. You are an voice ai HVAC diagnostic assistant speaking to an hvac technician on a job site."), # Apply STT config here
         llm=openai.LLM(model="gpt-4o"),
         tts=openai.TTS(model="gpt-4o-mini-tts", voice="ash"),   # Apply TTS config here
         turn_detection=turn_detector.EOUModel(),

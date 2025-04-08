@@ -70,22 +70,17 @@ class WorkflowAgent(BaseAgent):
         self.workflows_cache = {}  # Cache for workflow ID to name mapping
 
     async def on_enter(self) -> None:
-        """Called when the agent becomes active. Automatically fetches available workflows."""
+        """Called when the agent becomes active."""
         await super().on_enter()
-        logger.info("WorkflowAgent entered. Fetching available workflows...")
-        
-        # We need to get the context from the session since we don't have it as a parameter
-        # userdata = self.session.userdata # No need to get userdata separately
-        context = RunContext(session=self.session)
-        
-        try:
-            # Automatically fetch and cache available workflows on enter
-            await self.list_workflows(context)
-            # Initial message will be provided by the function tool
-        except Exception as e:
-            logger.error(f"Error fetching workflows: {e}")
-            # Return a message instead of raising an exception
-            return "I'm here to guide you through HVAC workflows, but I'm having trouble accessing the workflow database. What would you like help with today?"
+        logger.info("WorkflowAgent entered.")
+        # REMOVED: context = RunContext(session=self.session) - Cannot create RunContext here
+        # REMOVED: try/except block calling list_workflows
+
+        # You might want an initial message here, but it's often better
+        # to let the LLM generate the first response based on the transition message
+        # from the previous agent (handled in BaseAgent._transfer_to_agent)
+        # or based on the initial user prompt if this is the first agent.
+        # Example: await self.session.say("I can help you with HVAC workflows. What procedure are you looking for?")
 
     @function_tool()
     async def list_workflows(self, context: RunContext_T) -> str:
