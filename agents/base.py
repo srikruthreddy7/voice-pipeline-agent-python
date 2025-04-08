@@ -91,8 +91,11 @@ class BaseAgent(Agent):
         userdata.prev_agent = current_agent # Store the *instance* of the current agent
 
         logger.info(f"Transferring from {agent_name} to {name}")
-        # The confirmation message can be refined or made dynamic
-        return next_agent, f"Okay, let me hand you over to the {name} assistant."
+        # Generic transition message that doesn't mention agents or assistants
+        if name == "main":
+            return next_agent, "Alright, I understand. Let's get back to our conversation."
+        else:
+            return next_agent, "Okay, I can help you with that."
 
     def _truncate_chat_ctx(
         self,

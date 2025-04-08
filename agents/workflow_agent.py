@@ -1,11 +1,13 @@
 import logging
 import os
 import httpx
+import json
 from typing import List, Dict, Any, Optional, Annotated
 from pydantic import Field
 
 from livekit.plugins import openai
 from livekit.agents.llm import function_tool
+from livekit.agents.voice import RunContext
 
 from .base import BaseAgent, RunContext_T
 
@@ -58,7 +60,9 @@ class WorkflowAgent(BaseAgent):
                 "For each step, clearly explain what needs to be done and wait for confirmation before proceeding to the next step. "
                 "If the user has questions about a specific step, answer professionally with technical accuracy. "
                 "If they need to go back to a previous step or skip ahead, accommodate their request. "
-                "Remember you're speaking to an HVAC technician who understands industry terminology."
+                "Remember you're speaking to an HVAC technician who understands industry terminology. "
+                "Do not mention anything about agents, tools, or assistants in your responses. Never refer to transferring or "
+                "handing over to another agent or assistant. Speak naturally as if you're the same person throughout the conversation."
             )
         )
         self.current_workflow = None
@@ -66,33 +70,53 @@ class WorkflowAgent(BaseAgent):
         self.workflows_cache = {}  # Cache for workflow ID to name mapping
 
     async def on_enter(self) -> None:
+        """Called when the agent becomes active. Automatically fetches available workflows."""
         await super().on_enter()
         logger.info("WorkflowAgent entered. Fetching available workflows...")
+        
+        # We need to get the context from the session since we don't have it as a parameter
+        # userdata = self.session.userdata # No need to get userdata separately
+        context = RunContext(session=self.session)
+        
         try:
             # Automatically fetch and cache available workflows on enter
-            await self.list_workflows()
+            await self.list_workflows(context)
             # Initial message will be provided by the function tool
         except Exception as e:
             logger.error(f"Error fetching workflows: {e}")
-            initial_message = "I'm here to guide you through HVAC workflows, but I'm having trouble accessing the workflow database. What would you like help with today?"
-            return initial_message
+            # Return a message instead of raising an exception
+            return "I'm here to guide you through HVAC workflows, but I'm having trouble accessing the workflow database. What would you like help with today?"
 
     @function_tool()
-    async def list_workflows(self) -> str:
+    async def list_workflows(self, context: RunContext_T) -> str:
         """Fetches all available workflows from the server."""
         logger.info("Fetching list of workflows from server")
+        
+        # Get companyId using the simplified helper method
+        companyId = context.userdata.get_company_id()
+        
+        if not companyId:
+            logger.warning("Proceeding with workflow list request without companyId")
+        
         server_url = os.getenv("AITAS_SERVER_URL")
         if not server_url:
             logger.error("AITAS_SERVER_URL environment variable not set.")
             return "Sorry, I can't access the workflow database due to a configuration issue."
         
-        endpoint = f"{server_url.rstrip('/')}/v2/workflows"
-        logger.info(f"Requesting workflows from: {endpoint}")
+        endpoint = f"{server_url.rstrip('/')}/v2/workflows/list"
         
         try:
             async with httpx.AsyncClient() as client:
+                # Create request data - for GET request, add params if companyId exists
+                params = {}
+                if companyId:
+                    params["companyId"] = companyId
+                
+                logger.info(f"Requesting workflows from: {endpoint} with params: {params}")
+                
                 response = await client.get(
                     endpoint,
+                    params=params,
                     timeout=10.0
                 )
                 response.raise_for_status()
@@ -101,46 +125,86 @@ class WorkflowAgent(BaseAgent):
                 logger.info(f"Retrieved {len(workflows_data)} workflows")
                 
                 # Update the cache
-                self.workflows_cache = {w['id']: w['name'] for w in workflows_data if 'id' in w and 'name' in w}
+                self.workflows_cache = {w['id']: w.get('name', f"Workflow {w['id']}") 
+                                       for w in workflows_data if 'id' in w}
                 
                 # Format a nice response for the user
                 if not workflows_data:
                     return "I don't have any workflows available right now. Would you like me to create a custom workflow for you instead?"
                 
-                workflow_list = "\n".join([f"• {w.get('name', 'Unnamed')} - {w.get('description', 'No description')}" 
-                                         for w in workflows_data])
+                workflow_list = []
+                for w in workflows_data:
+                    name = w.get('name', f"Workflow {w.get('id', 'Unknown')}")
+                    description = w.get('description', '')
+                    if description:
+                        workflow_list.append(f"• {name} - {description}")
+                    else:
+                        workflow_list.append(f"• {name}")
                 
-                return f"Here are the available workflows I can help you with:\n\n{workflow_list}\n\nWhich one would you like to use?"
+                workflow_text = "\n".join(workflow_list)
                 
-        except httpx.RequestError as e:
-            logger.error(f"HTTP error occurred while fetching workflows: {e}")
-            return "Sorry, I'm having trouble connecting to the workflow database right now. Can I assist you with something else instead?"
+                return f"Here are the available workflows I can help you with:\n\n{workflow_text}\n\nWhich one would you like to use?"
         except Exception as e:
-            logger.error(f"Unexpected error fetching workflows: {e}")
-            return "Sorry, something went wrong while retrieving the workflows. Is there anything specific you'd like help with?"
+            logger.error(f"Error fetching workflows: {e}")
+            return "Sorry, I couldn't retrieve the list of workflows. Would you like me to try again or assist you with something else?"
 
     @function_tool()
-    async def get_workflow(self, workflow_id: Annotated[str, Field(description="The ID of the workflow to retrieve")]) -> str:
-        """Fetches a specific workflow by ID from the server."""
+    async def get_workflow(self, workflow_id: Annotated[str, Field(description="The ID of the workflow to retrieve")], context: RunContext_T) -> str:
+        """Fetches a specific workflow by ID from the server, sending company context."""
         logger.info(f"Fetching workflow with ID: {workflow_id}")
+        
+        # Get companyId using the simplified helper method  
+        companyId = context.userdata.get_company_id()
+        
+        if not companyId:
+            logger.warning("Proceeding with workflow request without companyId")
+
         server_url = os.getenv("AITAS_SERVER_URL")
         if not server_url:
             logger.error("AITAS_SERVER_URL environment variable not set.")
             return "Sorry, I can't access the workflow database due to a configuration issue."
         
-        endpoint = f"{server_url.rstrip('/')}/v2/workflows/{workflow_id}"
-        logger.info(f"Requesting workflow from: {endpoint}")
+        # Use the correct endpoint with query parameters instead of path
+        endpoint = f"{server_url.rstrip('/')}/v2/workflows/get"
         
         try:
             async with httpx.AsyncClient() as client:
+                # Create query parameters for both workflow_id and companyId
+                params = {}
+                if companyId:
+                    params["companyId"] = companyId
+                if workflow_id:
+                    params["id"] = workflow_id
+                
+                logger.info(f"Requesting workflow from: {endpoint} with params: {params}")
+                
+                # Use GET and send parameters as query params
                 response = await client.get(
                     endpoint,
+                    params=params,
                     timeout=10.0
                 )
                 response.raise_for_status()
                 
-                workflow_data = response.json()
-                logger.info(f"Retrieved workflow: {workflow_data.get('name', 'Unnamed')}")
+                # The response is now an array of steps directly
+                steps_data = response.json()
+                logger.info(f"Retrieved workflow steps: {len(steps_data)} steps")
+                
+                # Verify the response is a list
+                if not isinstance(steps_data, list):
+                    logger.error(f"Unexpected response format. Expected array but got: {type(steps_data)}")
+                    return "Sorry, I received an unexpected response format from the workflow database. Please try again later."
+                
+                # Look up the workflow name from cache if available
+                workflow_name = self.workflows_cache.get(workflow_id, f"Workflow {workflow_id}")
+                
+                # Create a workflow model with the available information
+                workflow_data = {
+                    "id": workflow_id,
+                    "name": workflow_name,
+                    "description": f"Workflow ID: {workflow_id}",
+                    "steps": steps_data
+                }
                 
                 # Create a workflow model and store it
                 self.current_workflow = WorkflowModel.from_json(workflow_data)
@@ -148,7 +212,6 @@ class WorkflowAgent(BaseAgent):
                 
                 # Format the response
                 workflow_name = self.current_workflow.name
-                workflow_description = self.current_workflow.description
                 total_steps = len(self.current_workflow.steps)
                 
                 if total_steps == 0:
@@ -158,7 +221,7 @@ class WorkflowAgent(BaseAgent):
                 first_step_description = first_step.get('description', 'No step description available')
                 
                 return (
-                    f"I've loaded the '{workflow_name}' workflow: {workflow_description}\n\n"
+                    f"I've loaded the '{workflow_name}' workflow.\n\n"
                     f"This workflow has {total_steps} steps. Let's start with the first step:\n\n"
                     f"Step 1: {first_step_description}\n\n"
                     f"Let me know when you've completed this step or if you need any clarification."
@@ -166,8 +229,8 @@ class WorkflowAgent(BaseAgent):
                 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                logger.error(f"Workflow ID {workflow_id} not found")
-                return f"I couldn't find a workflow with the ID '{workflow_id}'. Would you like to see a list of available workflows instead?"
+                logger.error(f"Workflow ID {workflow_id} not found (or not accessible for company {companyId})")
+                return f"I couldn't find a workflow with the ID '{workflow_id}' for your context. Would you like to see a list of available workflows instead?"
             else:
                 logger.error(f"HTTP error fetching workflow {workflow_id}: {e}")
                 return f"Sorry, I encountered an error retrieving the workflow (Error: {e.response.status_code}). Would you like to try again or choose a different workflow?"
@@ -176,76 +239,156 @@ class WorkflowAgent(BaseAgent):
             return f"Sorry, something went wrong while retrieving the workflow. Would you like to try again or see a list of available workflows?"
 
     @function_tool()
-    async def find_workflow_by_name(self, workflow_name: Annotated[str, Field(description="The name or keywords to search for in workflow names")]) -> str:
-        """Finds a workflow ID by matching its name or keywords, then retrieves it."""
-        logger.info(f"Searching for workflow matching: '{workflow_name}'")
+    async def find_workflow_by_name(self, workflow_name: Annotated[str, Field(description="The name of the workflow to search for")], context: RunContext_T) -> str:
+        """Searches for workflows that match a given name and returns options."""
+        logger.info(f"Searching for workflow with name: {workflow_name}")
         
-        # If cache is empty, populate it
+        # First, make sure we have workflows in the cache
         if not self.workflows_cache:
-            list_result = await self.list_workflows()
-            # If there was an error fetching workflows, return the error message
-            if "Sorry" in list_result or "I don't have any" in list_result:
-                return list_result
+            logger.info("Workflow cache empty, fetching workflows first")
+            await self.list_workflows(context)
+            
+            # If still empty after fetching, there are no workflows
+            if not self.workflows_cache:
+                return "I couldn't find any workflows in the system. Would you like me to assist you with something else?"
         
-        # Search for the workflow by name (case-insensitive partial match)
-        search_term = workflow_name.lower()
-        matches = []
+        # Search for workflows that contain the provided name (case-insensitive)
+        workflow_name_lower = workflow_name.lower()
+        matching_workflows = [
+            (workflow_id, name) 
+            for workflow_id, name in self.workflows_cache.items() 
+            if workflow_name_lower in name.lower()
+        ]
         
-        for workflow_id, name in self.workflows_cache.items():
-            if search_term in name.lower():
-                matches.append((workflow_id, name))
-        
-        # Handle search results
-        if len(matches) == 0:
-            return f"I couldn't find any workflows matching '{workflow_name}'. Would you like to see a list of all available workflows?"
-        
-        elif len(matches) == 1:
-            # Exact match found, proceed to load the workflow
-            workflow_id, matched_name = matches[0]
-            logger.info(f"Found exact match for '{workflow_name}': '{matched_name}' (ID: {workflow_id})")
-            return await self.get_workflow(workflow_id)
-        
+        # If there's only one match, get it directly
+        if len(matching_workflows) == 1:
+            workflow_id, name = matching_workflows[0]
+            logger.info(f"Found exact match for workflow: {name} (ID: {workflow_id})")
+            
+            # Get the complete workflow using the ID
+            return await self.get_workflow(workflow_id, context)
+            
+        # If there are multiple matches, show options
+        elif len(matching_workflows) > 1:
+            workflow_list = "\n".join([f"• {name} (ID: {workflow_id})" for workflow_id, name in matching_workflows])
+            return (
+                f"I found {len(matching_workflows)} workflows matching '{workflow_name}':\n\n"
+                f"{workflow_list}\n\n"
+                f"Which one would you like to use? Please specify the name or ID."
+            )
+            
+        # No matches found
         else:
-            # Multiple matches, ask user to clarify
-            options = "\n".join([f"• {name}" for workflow_id, name in matches])
-            return f"I found multiple workflows that might match '{workflow_name}':\n\n{options}\n\nWhich one would you like to use?"
+            return (
+                f"I couldn't find any workflows matching '{workflow_name}'. "
+                f"Would you like to see a list of all available workflows instead?"
+            )
 
     @function_tool()
-    async def next_step(self) -> str:
+    async def next_step(self, context: RunContext_T) -> str:
         """Moves to the next step in the current workflow."""
         if not self.current_workflow:
-            return "There's no active workflow. Would you like to see a list of available workflows?"
-        
-        if not self.current_workflow.steps:
-            return f"The '{self.current_workflow.name}' workflow doesn't have any steps defined."
+            return "There is no active workflow. Would you like me to help you find one?"
         
         total_steps = len(self.current_workflow.steps)
+        if total_steps == 0:
+            return "The current workflow doesn't have any steps defined."
+        
+        # Check if we're already at the last step
+        if self.current_step_index >= total_steps - 1:
+            return f"You've completed all {total_steps} steps in this workflow! Is there anything else you'd like help with?"
+        
+        # Move to the next step
         self.current_step_index += 1
-        
-        if self.current_step_index >= total_steps:
-            return f"That completes all {total_steps} steps of the '{self.current_workflow.name}' workflow. Is there anything else you'd like help with?"
-        
         current_step = self.current_workflow.steps[self.current_step_index]
+        
+        # Format the response
+        step_num = self.current_step_index + 1  # 1-indexed for user display
         step_description = current_step.get('description', 'No description available')
         
-        return f"Step {self.current_step_index + 1} of {total_steps}: {step_description}\n\nLet me know when you're ready to proceed to the next step."
-
+        return (
+            f"Step {step_num} of {total_steps}:\n\n"
+            f"{step_description}\n\n"
+            f"Let me know when you've completed this step or if you need any clarification."
+        )
+    
     @function_tool()
-    async def previous_step(self) -> str:
-        """Goes back to the previous step in the current workflow."""
+    async def previous_step(self, context: RunContext_T) -> str:
+        """Moves to the previous step in the current workflow."""
         if not self.current_workflow:
-            return "There's no active workflow. Would you like to see a list of available workflows?"
+            return "There is no active workflow. Would you like me to help you find one?"
         
-        if not self.current_workflow.steps:
-            return f"The '{self.current_workflow.name}' workflow doesn't have any steps defined."
+        total_steps = len(self.current_workflow.steps)
+        if total_steps == 0:
+            return "The current workflow doesn't have any steps defined."
         
+        # Check if we're at the first step
         if self.current_step_index <= 0:
-            self.current_step_index = 0
-            return "You're already at the first step of the workflow."
+            return "You're already at the first step of this workflow. Would you like me to repeat the instructions?"
         
+        # Move to the previous step
         self.current_step_index -= 1
         current_step = self.current_workflow.steps[self.current_step_index]
+        
+        # Format the response
+        step_num = self.current_step_index + 1  # 1-indexed for user display
         step_description = current_step.get('description', 'No description available')
         
+        return (
+            f"Going back to Step {step_num} of {total_steps}:\n\n"
+            f"{step_description}\n\n"
+            f"Let me know when you're ready to continue."
+        )
+    
+    @function_tool()
+    async def jump_to_step(self, step_number: Annotated[int, Field(description="The step number to jump to (1-indexed)")], context: RunContext_T) -> str:
+        """Jumps to a specific step in the current workflow."""
+        if not self.current_workflow:
+            return "There is no active workflow. Would you like me to help you find one?"
+        
         total_steps = len(self.current_workflow.steps)
-        return f"Going back to step {self.current_step_index + 1} of {total_steps}: {step_description}" 
+        if total_steps == 0:
+            return "The current workflow doesn't have any steps defined."
+        
+        # Convert to 0-indexed for internal use
+        target_index = step_number - 1
+        
+        # Validate the step number
+        if target_index < 0 or target_index >= total_steps:
+            return f"Invalid step number. This workflow has {total_steps} steps (1-{total_steps})."
+        
+        # Jump to the specified step
+        self.current_step_index = target_index
+        current_step = self.current_workflow.steps[self.current_step_index]
+        
+        # Format the response
+        step_description = current_step.get('description', 'No description available')
+        
+        return (
+            f"Step {step_number} of {total_steps}:\n\n"
+            f"{step_description}\n\n"
+            f"Let me know when you've completed this step or if you need help."
+        )
+    
+    @function_tool()
+    async def current_step(self, context: RunContext_T) -> str:
+        """Shows the current step in the workflow again."""
+        if not self.current_workflow:
+            return "There is no active workflow. Would you like me to help you find one?"
+        
+        total_steps = len(self.current_workflow.steps)
+        if total_steps == 0:
+            return "The current workflow doesn't have any steps defined."
+        
+        # Get the current step
+        current_step = self.current_workflow.steps[self.current_step_index]
+        
+        # Format the response
+        step_num = self.current_step_index + 1  # 1-indexed for user display
+        step_description = current_step.get('description', 'No description available')
+        
+        return (
+            f"Current Step ({step_num} of {total_steps}):\n\n"
+            f"{step_description}\n\n"
+            f"Let me know when you've completed this step or if you need any clarification."
+        ) 

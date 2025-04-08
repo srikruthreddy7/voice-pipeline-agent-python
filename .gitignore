@@ -3,3 +3,10 @@
 venv/
 .DS_Store
 agent.cpython-312.pyc
+__pycache__/
+*.pyc
+agents/__pycache__/
+agents/workflow_agent.cpython-312.pyc
+agents/main_agent.cpython-312.pyc
+agents/workflow_agent.cpython-312.pyc
+agents/main_agent.cpython-312.pyc

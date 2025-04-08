@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class NoteAgent(BaseAgent):
     def __init__(self):
         super().__init__(
-            instructions="You handle taking and retrieving notes for the technician. Use the 'add_note' tool to save information and retrieve it when asked. Confirm the note content before saving. After handling the note, ask if they need further note assistance or want to return to the main assistant.",
+            instructions="You handle taking and retrieving notes for the technician. Use the 'add_note' tool to save information and retrieve it when asked. Confirm the note content before saving. After handling the note, ask if they need anything else. Do not mention anything about agents, tools, or assistants in your responses. Never refer to transferring or handing over to another agent or assistant. Speak naturally as if you're the same person throughout the conversation.",
         )
 
     @function_tool()

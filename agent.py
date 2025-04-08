@@ -1,6 +1,8 @@
 import logging
 import os
 import httpx
+import tempfile  # Add tempfile module to read the metadata file
+import json
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -27,7 +29,6 @@ from livekit.plugins.openai import stt, tts
 from livekit import rtc
 from livekit.agents.voice.room_io import RoomInputOptions
 from datetime import datetime
-import json
 # Import the new agent structure
 from agents.user_data import UserData
 from agents.main_agent import MainAgent
@@ -48,9 +49,85 @@ def prewarm(proc: JobProcess):
 
 async def entrypoint(ctx: JobContext):
     logger.info(f"connecting to room {ctx.room.name}")
+    
+    # Add extensive logging about the JobContext
+    logger.info(f"JobContext details:")
+    logger.info(f"  Room: {ctx.room.name}")
+    logger.info(f"  Job: {ctx.job}")
+    logger.info(f"  Job ID: {ctx.job.id if ctx.job else 'None'}")
+    logger.info(f"  Job metadata: {ctx.job.metadata if ctx.job else 'None'}")
+    logger.info(f"  Job metadata type: {type(ctx.job.metadata) if ctx.job and ctx.job.metadata else 'None'}")
+    logger.info(f"  Job agent_name: {ctx.job.agent_name if ctx.job else 'None'}")
+    logger.info(f"  Job dispatch_id: {ctx.job.dispatch_id if ctx.job else 'None'}")
+    
+    # Log all attributes of JobContext for debugging
+    logger.info(f"All JobContext attributes: {dir(ctx)}")
+    logger.info(f"All Job attributes: {dir(ctx.job) if ctx.job else 'None'}")
 
     # Initialize agent first so the shutdown callback can access it
     userdata = UserData(current_room=ctx.room)
+    
+    # Try to read metadata from file if job metadata is empty
+    metadata_from_file = None
+    try:
+        metadata_dir = os.path.join(tempfile.gettempdir(), "voice_agent_metadata")
+        metadata_file = os.path.join(metadata_dir, f"{ctx.room.name}.json")
+        
+        if os.path.exists(metadata_file):
+            logger.info(f"Found metadata file: {metadata_file}")
+            with open(metadata_file, 'r') as f:
+                metadata_from_file = f.read()
+            logger.info(f"Read metadata from file: {metadata_from_file}")
+    except Exception as e:
+        logger.error(f"Error reading metadata from file: {e}")
+    
+    # Attempt to retrieve metadata from dispatch if not present in job
+    metadata_from_dispatch = None
+    if ctx.job and not ctx.job.metadata and ctx.job.dispatch_id:
+        try:
+            logger.info(f"Job metadata missing. Attempting to fetch from dispatch_id: {ctx.job.dispatch_id}")
+            # Create LiveKit API client to fetch dispatch info
+            from livekit import api
+            lkapi = api.LiveKitAPI()
+            
+            # Fetch dispatch info directly
+            dispatches = await lkapi.agent_dispatch.list_dispatch(room_name=ctx.room.name)
+            for d in dispatches:
+                logger.info(f"Found dispatch: ID={d.id}, metadata={d.metadata}")
+                if d.id == ctx.job.dispatch_id:
+                    metadata_from_dispatch = d.metadata
+                    logger.info(f"Found metadata from dispatch: {metadata_from_dispatch}")
+                    break
+            
+            if metadata_from_dispatch:
+                logger.info(f"Successfully retrieved metadata from dispatch: {metadata_from_dispatch}")
+            else:
+                logger.warning(f"Could not find dispatch with ID: {ctx.job.dispatch_id}")
+                
+            await lkapi.aclose()
+        except Exception as e:
+            logger.error(f"Error fetching dispatch metadata: {e}")
+    
+    # Use metadata in this order of preference:
+    # 1. Job metadata (if available)
+    # 2. Metadata from file (our direct method)
+    # 3. Metadata from dispatch (backup method)
+    # 4. None
+    if ctx.job and ctx.job.metadata:
+        logger.info(f"Using metadata from job: {ctx.job.metadata}")
+        userdata.job_metadata = ctx.job.metadata
+    elif metadata_from_file:
+        logger.info(f"Using metadata from file: {metadata_from_file}")
+        userdata.job_metadata = metadata_from_file
+    elif metadata_from_dispatch:
+        logger.info(f"Using metadata from dispatch: {metadata_from_dispatch}")
+        userdata.job_metadata = metadata_from_dispatch
+    else:
+        logger.warning("No metadata available from any source")
+        userdata.job_metadata = None
+    
+    logger.info(f"Final metadata stored in UserData: {userdata.job_metadata}")
+    
     main_agent = MainAgent()
     visual_agent = VisualDataAgent()
     diagnosis_agent = DiagnosisAgent()
@@ -128,8 +205,10 @@ async def entrypoint(ctx: JobContext):
         ),
     )
 
-    # Add the initial greeting back to ensure the first TTS call is valid
-    await agent.say("Hey, how can I help you today?", allow_interruptions=True)
+    # Add the initial greeting with the user's name using the simplified method
+    user_name = userdata.get_user_name()  # This safely handles all parsing and error cases
+    logger.info(f"Greeting user with name: {user_name}")
+    await agent.say(f"Hey {user_name}, is the system running or not?", allow_interruptions=True)
 
     logger.info("AgentSession started and listening.")
 

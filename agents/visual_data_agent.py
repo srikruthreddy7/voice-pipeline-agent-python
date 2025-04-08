@@ -52,7 +52,7 @@ async def get_latest_image(room: rtc.Room):
 class VisualDataAgent(BaseAgent):
     def __init__(self):
         super().__init__(
-            instructions="You are specialized in analyzing visual data. An image from the technician's camera feed will be provided in the chat context. Describe what you see, focusing on HVAC components and potential issues relevant to the ongoing task. After describing, ask the user if they need further analysis or want to return to the main assistant.",
+            instructions="You are specialized in analyzing visual data. An image from the technician's camera feed will be provided in the chat context. Describe what you see, focusing on HVAC components and potential issues relevant to the ongoing task. After describing, ask the user if they need further analysis. Do not mention anything about agents, tools, or assistants in your responses. Never refer to transferring or handing over to another agent or assistant. Speak naturally as if you're the same person throughout the conversation.",
         )
 
     async def on_enter(self) -> None:

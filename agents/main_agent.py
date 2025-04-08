@@ -22,15 +22,8 @@ class MainAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             instructions=(
-                "Affect/Personality: slight Spanish accent; sophisticated yet friendly, clearly understandable with a charming touch of Spanish intonation. \n\n"
-                "Tone: Warm and a little snooty. Speak with pride and knowledge for the art being presented.\n\n"
-                "Tone: Passionate about the quality and the ingredients of the food; persuasive about what the table should order. \n\n"
-                "Pronunciation: Pronounce these words in Italian (\"buonissima sera,\" \"bruschetta al pomodoro,\" \"semplice e perfetto,\" \" ossobuco alla milanese,\" risotto allo zafferano,\" \"belissimo,\" torta della nonna,\" \"mangia bene\" and \"buon appetito.\" All of the other words should be in English with an Italian accent.\n"
-                "Emotion: Warm, exuberant, and patient to ensure the tourist feels understood and guided throughout the interaction.\n\n"
-                "---\n"
                 "You are a tas (AiTAS), a voice AI created by Lynkup and trained on HVAC. You can both see and hear. "
                 "You are an voice ai HVAC diagnostic assistant speaking to an hvac technician on a job site. "
-                "You are the main orchestrator. Your job is to understand the user's request and delegate to the appropriate specialized agent using tools. "
                 "If the request doesn't match a specific agent (visual data, diagnosis, workflow, notes), handle the conversation yourself or ask for clarification. "
                 "If the user asks about something completely unrelated to HVAC, politely state that you can only assist with HVAC-related tasks and cannot answer their question. For example, say 'I can only help with HVAC tasks.' Do not try to answer unrelated questions."
                 "ALWAYS BE TECHNICAL, YOU ARE TALKING TO A TECHNICIAN. Don't respond with numbered lists, only explain in casual but technical conversational language. "
@@ -45,6 +38,7 @@ class MainAgent(BaseAgent):
                 "When you write pressures put dashes in between them. I.E: PSI should be Pee-S-eye. "
                 "Keep an understanding of what the technician has already done and take it into account in your responses. "
                 "When you see an image in our conversation, naturally incorporate what you see into your response, focusing on HVAC-related observations."
+                "Do not mention anything about agents or tools in your responses, only use them to help the technician."
             ),
         )
         # No tts=openai.TTS() needed here, inherited from AgentSession
@@ -215,7 +209,7 @@ class MainAgent(BaseAgent):
 
     @function_tool()
     async def to_workflow(self, context: RunContext_T) -> tuple[Agent, str]:
-        """Called when the user asks for a workflow or to start a guided procedure."""
+        """Called when the user asks for workflows or a specific workflow."""
         return await self._transfer_to_agent("workflow", context)
 
     @function_tool()
@@ -230,12 +224,12 @@ class MainAgent(BaseAgent):
         # Placeholder - Implement actual lookup logic
         return f"Looking up information for error code {error_code}. (Implementation pending)"
 
-    @function_tool()
-    async def get_scope_of_work(self, job_details: Annotated[str, Field(description="Details about the job or task requiring a scope of work.")]) -> str:
-        """Called when the user asks for a scope of work for a specific task or job."""
-        logger.info(f"Generating scope of work based on: {job_details}")
-        # Placeholder - Implement actual generation/retrieval logic
-        return f"Generating scope of work for '{job_details}'. (Implementation pending)"
+    # @function_tool()
+    # async def get_scope_of_work(self, job_details: Annotated[str, Field(description="Details about the job or task requiring a scope of work.")]) -> str:
+    #     """Called when the user asks for a scope of work for a specific task or job."""
+    #     logger.info(f"Generating scope of work based on: {job_details}")
+    #     # Placeholder - Implement actual generation/retrieval logic
+    #     return f"Generating scope of work for '{job_details}'. (Implementation pending)"
 
     @function_tool()
     async def remember_info(self, key: Annotated[str, Field(description="A short label or name for the piece of information.")],
